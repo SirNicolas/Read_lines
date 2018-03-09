@@ -1,5 +1,5 @@
 import os
-import json
+import tornado.gen
 import tornado.ioloop
 import tornado.web
 from cache import Cache
@@ -7,30 +7,39 @@ from cache import Cache
 cache = Cache(timeout=60 * 60)
 
 
+@tornado.gen.coroutine
+def read_lines(offset, next_offset, chunk_size):
+    lines = []
+    local_total_size = 0
+    total_size = cache.get('total_size')
+
+    with open('test_log', 'r') as f:
+        for i, line in enumerate(f):
+            if i > offset:
+                lines.append(line)
+            if total_size is None:
+                local_total_size += 1
+            elif i >= next_offset:
+                break
+
+    if local_total_size:
+        lines = lines[:chunk_size]
+        total_size = local_total_size
+        cache.set('total_size', total_size)
+    next_offset = min(next_offset, total_size)
+
+    return lines, total_size, next_offset
+
+
 class ReadLogHandler(tornado.web.RequestHandler):
 
+    @tornado.gen.coroutine
     def post(self):
         chunk_size = int(self.get_argument("chunk_size", default=10))
         offset = int(self.get_argument("offset", default=0))
         next_offset = offset + chunk_size
-        lines = []
-        local_total_size = 0
-        total_size = cache.get('total_size')
-
-        with open('test_log', 'r') as f:
-            for i, line in enumerate(f):
-                if i > offset:
-                    lines.append(line)
-                if total_size is None:
-                    local_total_size += 1
-                elif i >= next_offset:
-                    break
-
-        if local_total_size:
-            lines = lines[:chunk_size]
-            total_size = local_total_size
-            cache.set('total_size', total_size)
-        next_offset = min(next_offset, total_size)
+        lines, total_size, next_offset = yield read_lines(
+            offset, next_offset, chunk_size)
 
         message = {
             'ok': True,
@@ -39,6 +48,7 @@ class ReadLogHandler(tornado.web.RequestHandler):
             'next_offset': next_offset
         }
         self.write(message)
+        self.flush()
 
     def get(self):
         self.render("index.html")
